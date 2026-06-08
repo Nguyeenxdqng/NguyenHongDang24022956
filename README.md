@@ -8,7 +8,7 @@ Hệ thống sử dụng mô hình LayoutLMv3 để trích xuất đặc trưng 
 
 ## Demo App
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](YOUR_STREAMLIT_LINK_HERE)
+[![Graphic Design Quality Evaluation System](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://nguyenhongdang24022956-scoredesign.streamlit.app/)
 
 ---
 
