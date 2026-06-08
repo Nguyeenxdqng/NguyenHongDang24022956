@@ -8,7 +8,7 @@ import joblib
 import warnings
 import pytesseract
 
-# CHÈN THÊM DÒNG NÀY (Thay đường dẫn nếu bạn cài ở ổ khác)
+# Chỉ định đường dẫn tới Tesseract OCR cài trên Windows
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 warnings.filterwarnings("ignore")
@@ -152,25 +152,40 @@ def compute_geometric_features(boxes_raw: np.ndarray) -> np.ndarray:
 # ─────────────────────────────────────────────
 # MODEL LOADING (cached)
 # ─────────────────────────────────────────────
-@st.cache_resource(show_spinner="⏳ Đang tải LayoutLMv3 và các mô hình ML...")
+@st.cache_resource(show_spinner="⏳ Đang tải LayoutLMv3 và hệ thống 9 mô hình ML nâng cao...")
 def load_all_models():
     from transformers import LayoutLMv3Processor, LayoutLMv3Model
 
-    # Paths — support both local and same-directory deployment
     base = os.path.dirname(os.path.abspath(__file__))
 
     def _load(name):
         path = os.path.join(base, name)
         if not os.path.exists(path):
-            # fallback: current working directory
             path = name
         return joblib.load(path)
 
+    # Load bộ tiền xử lý dùng chung
     scaler = _load("scaler.pkl")
     pca = _load("pca.pkl")
-    gb = _load("gb_model.pkl")
-    rf = _load("rf_model.pkl")
-    svr = _load("svr_model.pkl")
+
+    # Đọc cấu trúc cây toàn bộ 9 file pkl đã huấn luyện riêng biệt
+    models_db = {
+        "GradientBoosting": {
+            "alignment": _load("gb_model_alignment.pkl"),
+            "whitespace": _load("gb_model_whitespace.pkl"),
+            "overlap": _load("gb_model_overlap.pkl")
+        },
+        "RandomForest": {
+            "alignment": _load("rf_model_alignment.pkl"),
+            "whitespace": _load("rf_model_whitespace.pkl"),
+            "overlap": _load("rf_model_overlap.pkl")
+        },
+        "SVR": {
+            "alignment": _load("svr_model_alignment.pkl"),
+            "whitespace": _load("svr_model_whitespace.pkl"),
+            "overlap": _load("svr_model_overlap.pkl")
+        }
+    }
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     processor = LayoutLMv3Processor.from_pretrained(
@@ -179,7 +194,7 @@ def load_all_models():
     model = LayoutLMv3Model.from_pretrained("microsoft/layoutlmv3-base").to(device)
     model.eval()
 
-    return scaler, pca, gb, rf, svr, processor, model, device
+    return scaler, pca, models_db, processor, model, device
 
 
 # ─────────────────────────────────────────────
@@ -214,20 +229,18 @@ def extract_features(img: Image.Image, processor, model, device):
     return feat_raw, geo_vec
 
 
-def predict_scores(feat_raw, scaler, pca, model_dict, weights):
+def predict_scores(feat_raw, scaler, pca, active_models, weights):
+    # Tiến hành transform đặc trưng đầu vào qua Scaler và PCA
     feat_sc = scaler.transform(feat_raw)
     feat_pca = pca.transform(feat_sc[:, :-12])
     feat_f = np.hstack([feat_pca, feat_sc[:, -12:]])
 
-    chosen = model_dict["model"]
-    score_alignment = float(np.clip(chosen.predict(feat_f)[0], 0, 10))
-    score_whitespace = float(np.clip(chosen.predict(feat_f)[0], 0, 10))
-    score_overlap = float(np.clip(chosen.predict(feat_f)[0], 0, 10))
+    # Kích hoạt đúng mô hình chuyên biệt cho từng tiêu chí để dự đoán điểm số độc lập
+    score_alignment = float(np.clip(active_models["alignment"].predict(feat_f)[0], 0, 10))
+    score_whitespace = float(np.clip(active_models["whitespace"].predict(feat_f)[0], 0, 10))
+    score_overlap = float(np.clip(active_models["overlap"].predict(feat_f)[0], 0, 10))
 
-    # NOTE: the saved pkl files are from the last training loop (overlap criterion).
-    # For a proper per-criterion app, re-save separate model files per criterion.
-    # Here we use the single saved model for all three as a demo.
-
+    # Tính điểm tổng hợp dựa trên trọng số mà người dùng cấu hình ở Sidebar
     score_overall = round(
         weights["alignment"] * score_alignment
         + weights["whitespace"] * score_whitespace
@@ -257,7 +270,7 @@ def predict_scores(feat_raw, scaler, pca, model_dict, weights):
 # ─────────────────────────────────────────────
 st.title("🎨 Đánh giá Chất lượng Thiết kế Đồ họa")
 st.caption(
-    "Mô hình: LayoutLMv3 + Geometric Features → GradientBoosting / RandomForest / SVR  |  "
+    "Mô hình: LayoutLMv3 + Geometric Features → Đa mô hình chuyên biệt  |  "
     "Tiêu chí: Alignment · Whitespace · Overlap  |  "
     "MSSV: 24022956 – Nguyễn Hồng Đăng"
 )
@@ -272,7 +285,7 @@ with st.sidebar:
         "Chọn mô hình ML",
         ["GradientBoosting", "RandomForest", "SVR"],
         index=0,
-        help="GradientBoosting thường cho R² tốt nhất trên tập test.",
+        help="Hệ thống sẽ tự động gọi 3 file mô hình con tương ứng với thuật toán được lựa chọn.",
     )
 
     st.subheader("Trọng số tiêu chí")
@@ -294,11 +307,10 @@ with st.sidebar:
 
     st.divider()
     st.info(
-        "**Về mô hình**\n\n"
-        "- Dataset: HuggingFace `creative-graphic-design/GraphicDesignEvaluation`\n"
-        "- ~400 mẫu/tiêu chí, nhãn GPT (0–10)\n"
-        "- Feature: CLS (768) + Visual patch mean/std (1536) + Geo (12) = 2316d\n"
-        "- PCA → 100d + Geo → 112d\n"
+        "**Về mô hình nâng cấp**\n\n"
+        "- Đã kích hoạt hệ thống **9 mô hình song song**.\n"
+        "- Mỗi tiêu chí chấm điểm sở hữu một mô hình trí tuệ nhân tạo riêng biệt.\n"
+        "- Thanh trượt trọng số phản ánh chính xác điểm số tổng hợp dựa trên độ ưu tiên bố cục."
     )
 
 # ── Main: upload ──────────────────────────────────────────────────────
@@ -329,15 +341,15 @@ with col_upload:
         run_btn = st.button("▶️ Chấm điểm thiết kế", type="primary", use_container_width=True)
 
         if run_btn:
-            # Load models
+            # Load tất cả artifacts của hệ thống vào cache
             try:
-                scaler, pca, gb_m, rf_m, svr_m, processor, lm_model, device = load_all_models()
+                scaler, pca, models_db, processor, lm_model, device = load_all_models()
             except Exception as e:
-                st.error(f"❌ Không thể tải mô hình: {e}")
+                st.error(f"❌ Không thể tải hệ thống mô hình: {e}")
                 st.stop()
 
-            model_map = {"GradientBoosting": gb_m, "RandomForest": rf_m, "SVR": svr_m}
-            model_dict = {"model": model_map[model_choice], "name": model_choice}
+            # Lấy ra bộ 3 mô hình thuộc thuật toán người dùng vừa click lựa chọn ở Sidebar
+            active_models = models_db[model_choice]
 
             with st.spinner("⏳ Đang trích xuất đặc trưng (LayoutLMv3)..."):
                 try:
@@ -346,8 +358,8 @@ with col_upload:
                     st.error(f"❌ Lỗi trích xuất đặc trưng: {e}")
                     st.stop()
 
-            with st.spinner("🤖 Dự đoán điểm..."):
-                result = predict_scores(feat_raw, scaler, pca, model_dict, weights)
+            with st.spinner("🤖 Đang chạy tính toán điểm số qua các mô hình chuyên biệt..."):
+                result = predict_scores(feat_raw, scaler, pca, active_models, weights)
 
             # ── Results ──────────────────────────────────────────
             st.divider()
@@ -378,7 +390,7 @@ with col_upload:
                         {result['verdict']}
                     </div>
                     <div style="font-size: 13px; margin-top: 6px; color: #888;">
-                        Mô hình: {model_choice}
+                        Mô hình cốt lõi: {model_choice}
                     </div>
                 </div>
                 """,
@@ -393,7 +405,7 @@ with col_upload:
                 (c3, "🔀 Overlap",    result["score_overlap"],    weights["overlap"]),
             ]
             for col, title, score, w_val in criteria:
-                bar_pct = int(score * 10)
+                bar_pct = int(np.clip(score * 10, 0, 100))
                 bar_color = "#4ade80" if score >= 7 else "#facc15" if score >= 5 else "#f87171"
                 with col:
                     st.markdown(
@@ -444,7 +456,7 @@ with col_upload:
                 hide_index=True,
                 column_config={
                     "Tiêu chí": st.column_config.TextColumn(width="small"),
-                    "Tên đặc trưng": st.column_config.TextColumn(width="medium"),
+                    "Tên authoritarian đặc trưng": st.column_config.TextColumn(width="medium"),
                     "Giá trị": st.column_config.TextColumn(width="small"),
                     "Mô tả": st.column_config.TextColumn(width="large"),
                 },
