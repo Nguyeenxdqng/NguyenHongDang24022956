@@ -8,8 +8,8 @@ import joblib
 import warnings
 import pytesseract
 
-# Chỉ định đường dẫn tới Tesseract OCR cài trên Windows
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+if os.name == 'nt' and os.path.exists(r'C:\Program Files\Tesseract-OCR\tesseract.exe'):
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 warnings.filterwarnings("ignore")
 # ─────────────────────────────────────────────
