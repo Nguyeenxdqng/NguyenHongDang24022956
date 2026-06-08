@@ -1,6 +1,9 @@
 streamlit
 numpy
 torch
+transformers
 Pillow
-pandas
+joblib
 scikit-learn
+pytesseract
+pandas
